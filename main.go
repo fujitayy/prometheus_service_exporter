@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/kelseyhightower/envconfig"
 	"github.com/prometheus/client_golang/prometheus"
@@ -32,20 +33,29 @@ func init() {
 	prometheus.MustRegister(pm)
 }
 
-func serviceCheck(s string) float64 {
+func serviceCheck(s string) (float64, error) {
 	//Command to check if systemd service is active
 	var up float64
 	cmdName := "/bin/systemctl"
 	cmdArgs := []string{"is-active", s}
-	cmdOut, _ := exec.Command(cmdName, cmdArgs...).Output()
+	cmdOut, err := exec.Command(cmdName, cmdArgs...).Output()
 	isActive := strings.TrimSpace(string(cmdOut))
 
-	if isActive == "active" {
-		up = 1
-	} else {
+	up = -1
+	switch isActive {
+	case "inactive":
 		up = 0
+	case "active":
+		up = 1
+	case "unknown":
+		up = 2
 	}
-	return up
+
+	if up < 0 {
+		return up, err
+	}
+
+	return up, nil
 }
 
 func main() {
@@ -65,11 +75,26 @@ func main() {
 	}
 
 	go func() {
+		defer func() {
+			err := recover()
+			if err != "" {
+				log.Printf("PANIC!: %s\n", err)
+			} else {
+				log.Println("Finish watching.")
+			}
+		}()
+
 		for {
 			for i := range serviceSlice {
-				x := serviceCheck(serviceSlice[i])
+				x, err := serviceCheck(serviceSlice[i])
+				if err != nil {
+					log.Printf("Service: %s, Error: %s\n", serviceSlice[i], err)
+					continue
+				}
 				pm.With(prometheus.Labels{"service": serviceSlice[i]}).Set(x)
 			}
+
+			time.Sleep(1 * time.Second)
 		}
 	}()
 
